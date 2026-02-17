@@ -1,5 +1,5 @@
 import re
-from typing import List, Optional, Union, Tuple, TypedDict, NotRequired
+from typing import List, Optional, Union, Tuple, TypedDict, NotRequired, Any
 
 
 # Type Definitions
@@ -14,6 +14,8 @@ class PricingNode(TypedDict):
     path: str
     type: str  # "numeric" or "label"
     cost: Union[int, float]
+    unit: NotRequired[str]
+    currency: NotRequired[str]
     value: NotRequired[
         Optional[Union[str, int, float]]
     ]  # Required for label type, None for numeric
@@ -281,9 +283,12 @@ class PricingEngine:
         step_values = {}
         breakdown = []
 
+        # Create map of raw input values for reference in steps (e.g. price mode)
+        input_values = {i["path"]: i.get("value") for i in inputs}
+
         for step in pricing_strategy["steps"]:
             result, breakdown_entry = self._process_step(
-                step, step_values, final_cost_by_path
+                step, step_values, final_cost_by_path, input_values
             )
             step_values[step["id"]] = result
             breakdown.append(breakdown_entry)
@@ -501,6 +506,7 @@ class PricingEngine:
         step: Step,
         step_values: dict[int, Union[int, float]],
         final_cost_by_path: dict[str, Union[int, float]],
+        input_values: dict[str, Any],
     ) -> Tuple[Union[int, float], BreakdownEntry]:
         """Process a single pricing strategy step and return result and breakdown entry.
 
@@ -549,6 +555,8 @@ class PricingEngine:
             return self._process_clamp(step, step_name, step_values, final_cost_by_path)
         elif mode == "if":
             return self._process_if(step, step_name, step_values, final_cost_by_path)
+        elif mode == "price":
+            return self._process_price(step, step_name, input_values)
         else:
             raise ValueError(f"Unknown mode: {mode}")
 
@@ -939,6 +947,108 @@ class PricingEngine:
             "description": f"If {left_val} {operator} {right_val} then {then_val} else {else_val}",
             "inputs": [left_val, right_val, then_val, else_val],
             "calculation": f"{round(left_val, 2)} {operator} {round(right_val, 2)} → {'TRUE' if condition_result else 'FALSE'} → {round(result, 2)}",
+            "result": result,
+        }
+        return result, breakdown
+
+    def _process_price(
+        self,
+        step: Step,
+        step_name: str,
+        input_values: dict[str, Any],
+    ) -> Tuple[Union[int, float], BreakdownEntry]:
+        """Process price operation (explicit input * cost calculation).
+
+        Args:
+            step: The step configuration
+            step_name: Human-readable name for the step
+            input_values: Dictionary of raw input values by path
+
+        Returns:
+            Tuple of (calculated_cost, breakdown_entry)
+
+        Raises:
+            ValueError: If input path not found or node missing
+        """
+        inputs_list = step.get("inputs", [])
+        if not inputs_list:
+            raise ValueError(f"{step_name}: price mode requires one input path")
+
+        target_path = inputs_list[0]
+        if not isinstance(target_path, str):
+            raise ValueError(f"{step_name}: price mode input must be a path string")
+
+        # Handle wildcards if present (though typically price mode targets specific inputs)
+        # For now, let's assume direct path or resolve wildcard to single path if needed?
+        # The user req says "take only the pricing node".
+        # Let's support checks.
+
+        # We need the node and the input value.
+        # Check if we have an input for this path
+        if target_path not in input_values and "*" not in target_path:
+            # It might be an optional input that wasn't provided?
+            # Or it implies we should look up the node even if no input?
+            # Usually "price" implies calculating cost of an INPUT.
+            # If input is missing, maybe cost is 0?
+            # For now, let's assume it must exist or we error/return 0.
+            if target_path in self.numeric_nodes or any(
+                target_path == k[0] for k in self.label_nodes
+            ):
+                # Node exists but no input value provided.
+                # If numeric, value is effectively 0 or None?
+                # Let's assume 0 for check.
+                raw_value = 0
+            else:
+                raise ValueError(f"{step_name}: Input '{target_path}' not found")
+        else:
+            raw_value = input_values.get(target_path)
+
+        # Find the pricing node
+        # Try numeric first
+        calculation_desc = ""
+        result = 0
+
+        # Re-implementing the logic cleanly to handle both lookups and formatting
+        # Numeric lookup
+        node_numeric = self.numeric_nodes.get(target_path)
+        # Label lookup
+        node_label = self.label_nodes.get((target_path, raw_value))
+
+        node = node_numeric or node_label
+
+        if not node:
+            raise ValueError(f"{step_name}: No pricing node found for '{target_path}'")
+
+        cost_per_unit = node["cost"]
+        unit = node.get("unit", "")
+        currency = node.get("currency", "")
+
+        if node["type"] == "numeric":
+            if not isinstance(raw_value, (int, float)):
+                if raw_value is None:
+                    raw_value = 0
+                elif not isinstance(raw_value, (int, float)):
+                    raise ValueError(
+                        f"{step_name}: Invalid numeric value '{raw_value}'"
+                    )
+            result = raw_value * cost_per_unit
+            # Format: "2 cm3 * 20 INR" or "2 * 20"
+            part1 = f"{raw_value} {unit}".strip()
+            part2 = f"{cost_per_unit} {currency}".strip()
+            calculation_desc = f"{part1} * {part2}"
+        else:
+            # Label
+            result = cost_per_unit
+            part2 = f"{cost_per_unit} {currency}".strip()
+            calculation_desc = f"{part2} (fixed cost)"
+
+        breakdown = {
+            "step_id": step["id"],
+            "name": step_name,
+            "operation": "Price Calculation",
+            "description": f"Calculate cost for {target_path}",
+            "inputs": [raw_value],
+            "calculation": calculation_desc,
             "result": result,
         }
         return result, breakdown

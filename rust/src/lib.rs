@@ -13,6 +13,10 @@ pub struct PricingNode {
     pub node_type: String, // "numeric" or "label"
     pub cost: Value,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub currency: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<serde_json::Value>, // None for numeric, Some(value) for label
 }
 
@@ -114,6 +118,13 @@ pub enum Step {
         #[serde(rename = "else", skip_serializing_if = "Option::is_none")]
         else_: Option<serde_json::Value>,
     },
+    #[serde(rename = "price")]
+    Price {
+        id: i32,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        inputs: Vec<serde_json::Value>,
+    },
 }
 
 impl Step {
@@ -129,21 +140,29 @@ impl Step {
             Step::Round { id, .. } => *id,
             Step::Clamp { id, .. } => *id,
             Step::If { id, .. } => *id,
+            Step::Price { id, .. } => *id,
         }
     }
 
     pub fn name(&self) -> String {
         match self {
             Step::Add { id, name, .. } => name.clone().unwrap_or_else(|| format!("Step {}", id)),
-            Step::Subtract { id, name, .. } => name.clone().unwrap_or_else(|| format!("Step {}", id)),
-            Step::Multiply { id, name, .. } => name.clone().unwrap_or_else(|| format!("Step {}", id)),
+            Step::Subtract { id, name, .. } => {
+                name.clone().unwrap_or_else(|| format!("Step {}", id))
+            }
+            Step::Multiply { id, name, .. } => {
+                name.clone().unwrap_or_else(|| format!("Step {}", id))
+            }
             Step::Divide { id, name, .. } => name.clone().unwrap_or_else(|| format!("Step {}", id)),
             Step::Min { id, name, .. } => name.clone().unwrap_or_else(|| format!("Step {}", id)),
             Step::Max { id, name, .. } => name.clone().unwrap_or_else(|| format!("Step {}", id)),
-            Step::Percentage { id, name, .. } => name.clone().unwrap_or_else(|| format!("Step {}", id)),
+            Step::Percentage { id, name, .. } => {
+                name.clone().unwrap_or_else(|| format!("Step {}", id))
+            }
             Step::Round { id, name, .. } => name.clone().unwrap_or_else(|| format!("Step {}", id)),
             Step::Clamp { id, name, .. } => name.clone().unwrap_or_else(|| format!("Step {}", id)),
             Step::If { id, name, .. } => name.clone().unwrap_or_else(|| format!("Step {}", id)),
+            Step::Price { id, name, .. } => name.clone().unwrap_or_else(|| format!("Step {}", id)),
         }
     }
 }
@@ -203,20 +222,28 @@ impl PricingEngine {
         self.validate_required_inputs(&pricing_strategy, &inputs)?;
 
         // Calculate final input costs
-        let final_cost_by_path = self.calculate_input_costs(
-            &inputs,
-            &nodes_by_path,
-            &label_nodes,
-            &numeric_nodes,
-        )?;
+        let final_cost_by_path =
+            self.calculate_input_costs(&inputs, &nodes_by_path, &label_nodes, &numeric_nodes)?;
+
+        // Create map of raw input values for reference in steps
+        let input_values: HashMap<String, serde_json::Value> = inputs
+            .iter()
+            .map(|i| (i.path.clone(), i.value.clone()))
+            .collect();
 
         // Apply pricing strategy steps
         let mut step_values: HashMap<i32, Value> = HashMap::new();
         let mut breakdown: Vec<BreakdownEntry> = Vec::new();
 
         for step in &pricing_strategy.steps {
-            let (result, breakdown_entry) =
-                self.process_step(step, &step_values, &final_cost_by_path)?;
+            let (result, breakdown_entry) = self.process_step(
+                step,
+                &step_values,
+                &final_cost_by_path,
+                &input_values,
+                &numeric_nodes,
+                &label_nodes,
+            )?;
             step_values.insert(step.id(), result);
             breakdown.push(breakdown_entry);
         }
@@ -433,11 +460,18 @@ impl PricingEngine {
         step: &Step,
         step_values: &HashMap<i32, Value>,
         final_cost_by_path: &HashMap<String, Value>,
+        input_values: &HashMap<String, serde_json::Value>,
+        numeric_nodes: &HashMap<String, PricingNode>,
+        label_nodes: &HashMap<(String, String), PricingNode>,
     ) -> Result<(Value, BreakdownEntry), String> {
         match step {
-            Step::Add { id, name, inputs } => {
-                self.process_add(*id, name.as_deref(), inputs, step_values, final_cost_by_path)
-            }
+            Step::Add { id, name, inputs } => self.process_add(
+                *id,
+                name.as_deref(),
+                inputs,
+                step_values,
+                final_cost_by_path,
+            ),
             Step::Subtract { id, name, inputs } => self.process_subtract(
                 *id,
                 name.as_deref(),
@@ -452,15 +486,27 @@ impl PricingEngine {
                 step_values,
                 final_cost_by_path,
             ),
-            Step::Divide { id, name, inputs } => {
-                self.process_divide(*id, name.as_deref(), inputs, step_values, final_cost_by_path)
-            }
-            Step::Min { id, name, inputs } => {
-                self.process_min(*id, name.as_deref(), inputs, step_values, final_cost_by_path)
-            }
-            Step::Max { id, name, inputs } => {
-                self.process_max(*id, name.as_deref(), inputs, step_values, final_cost_by_path)
-            }
+            Step::Divide { id, name, inputs } => self.process_divide(
+                *id,
+                name.as_deref(),
+                inputs,
+                step_values,
+                final_cost_by_path,
+            ),
+            Step::Min { id, name, inputs } => self.process_min(
+                *id,
+                name.as_deref(),
+                inputs,
+                step_values,
+                final_cost_by_path,
+            ),
+            Step::Max { id, name, inputs } => self.process_max(
+                *id,
+                name.as_deref(),
+                inputs,
+                step_values,
+                final_cost_by_path,
+            ),
             Step::Percentage {
                 id,
                 name,
@@ -517,6 +563,14 @@ impl PricingEngine {
                 step_values,
                 final_cost_by_path,
             ),
+            Step::Price { id, name, inputs } => self.process_price(
+                *id,
+                name.as_deref(),
+                inputs,
+                input_values,
+                numeric_nodes,
+                label_nodes,
+            ),
         }
     }
 
@@ -543,7 +597,9 @@ impl PricingEngine {
         step_values: &HashMap<i32, Value>,
         final_cost_by_path: &HashMap<String, Value>,
     ) -> Result<(Value, BreakdownEntry), String> {
-        let step_name = name.map(|s| s.to_string()).unwrap_or_else(|| format!("Step {}", id));
+        let step_name = name
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("Step {}", id));
         let resolved_inputs = self.resolve_inputs(inputs, step_values, final_cost_by_path)?;
 
         if resolved_inputs.is_empty() {
@@ -580,11 +636,16 @@ impl PricingEngine {
         step_values: &HashMap<i32, Value>,
         final_cost_by_path: &HashMap<String, Value>,
     ) -> Result<(Value, BreakdownEntry), String> {
-        let step_name = name.map(|s| s.to_string()).unwrap_or_else(|| format!("Step {}", id));
+        let step_name = name
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("Step {}", id));
         let resolved_inputs = self.resolve_inputs(inputs, step_values, final_cost_by_path)?;
 
         if resolved_inputs.is_empty() {
-            return Err(format!("{}: subtract requires at least one input", step_name));
+            return Err(format!(
+                "{}: subtract requires at least one input",
+                step_name
+            ));
         }
 
         let mut result = resolved_inputs[0];
@@ -604,10 +665,7 @@ impl PricingEngine {
                 step_id: id,
                 name: step_name.to_string(),
                 operation: "Subtraction".to_string(),
-                description: format!(
-                    "Subtract {} value(s) from base",
-                    resolved_inputs.len() - 1
-                ),
+                description: format!("Subtract {} value(s) from base", resolved_inputs.len() - 1),
                 inputs: resolved_inputs,
                 calculation,
                 result,
@@ -624,11 +682,16 @@ impl PricingEngine {
         step_values: &HashMap<i32, Value>,
         final_cost_by_path: &HashMap<String, Value>,
     ) -> Result<(Value, BreakdownEntry), String> {
-        let step_name = name.map(|s| s.to_string()).unwrap_or_else(|| format!("Step {}", id));
+        let step_name = name
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("Step {}", id));
         let resolved_inputs = self.resolve_inputs(inputs, step_values, final_cost_by_path)?;
 
         if resolved_inputs.is_empty() {
-            return Err(format!("{}: multiply requires at least one input", step_name));
+            return Err(format!(
+                "{}: multiply requires at least one input",
+                step_name
+            ));
         }
 
         let mut result = 1.0;
@@ -665,11 +728,16 @@ impl PricingEngine {
         step_values: &HashMap<i32, Value>,
         final_cost_by_path: &HashMap<String, Value>,
     ) -> Result<(Value, BreakdownEntry), String> {
-        let step_name = name.map(|s| s.to_string()).unwrap_or_else(|| format!("Step {}", id));
+        let step_name = name
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("Step {}", id));
         let resolved_inputs = self.resolve_inputs(inputs, step_values, final_cost_by_path)?;
 
         if resolved_inputs.len() < 2 {
-            return Err(format!("{}: divide requires at least two inputs", step_name));
+            return Err(format!(
+                "{}: divide requires at least two inputs",
+                step_name
+            ));
         }
 
         let mut result = resolved_inputs[0];
@@ -713,7 +781,9 @@ impl PricingEngine {
         step_values: &HashMap<i32, Value>,
         final_cost_by_path: &HashMap<String, Value>,
     ) -> Result<(Value, BreakdownEntry), String> {
-        let step_name = name.map(|s| s.to_string()).unwrap_or_else(|| format!("Step {}", id));
+        let step_name = name
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("Step {}", id));
         let resolved_inputs = self.resolve_inputs(inputs, step_values, final_cost_by_path)?;
 
         if resolved_inputs.is_empty() {
@@ -756,7 +826,9 @@ impl PricingEngine {
         step_values: &HashMap<i32, Value>,
         final_cost_by_path: &HashMap<String, Value>,
     ) -> Result<(Value, BreakdownEntry), String> {
-        let step_name = name.map(|s| s.to_string()).unwrap_or_else(|| format!("Step {}", id));
+        let step_name = name
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("Step {}", id));
         let resolved_inputs = self.resolve_inputs(inputs, step_values, final_cost_by_path)?;
 
         if resolved_inputs.is_empty() {
@@ -790,6 +862,91 @@ impl PricingEngine {
         ))
     }
 
+    /// Process price operation (explicit input * cost calculation)
+    fn process_price(
+        &mut self,
+        id: i32,
+        name: Option<&str>,
+        inputs: &[serde_json::Value],
+        input_values: &HashMap<String, serde_json::Value>,
+        numeric_nodes: &HashMap<String, PricingNode>,
+        label_nodes: &HashMap<(String, String), PricingNode>,
+    ) -> Result<(Value, BreakdownEntry), String> {
+        let step_name = name
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("Step {}", id));
+
+        if inputs.is_empty() {
+            return Err(format!("{}: price mode requires one input path", step_name));
+        }
+
+        let target_path = inputs[0]
+            .as_str()
+            .ok_or_else(|| format!("{}: price mode input must be a path string", step_name))?
+            .to_string();
+
+        // Get raw input value
+        let raw_value_json = input_values.get(&target_path);
+
+        // Find the node
+        // We need to resolve the value to search for label nodes
+        let raw_value_str = match raw_value_json {
+            Some(serde_json::Value::String(s)) => s.clone(),
+            Some(serde_json::Value::Number(n)) => n.to_string(),
+            Some(serde_json::Value::Bool(b)) => b.to_string(),
+            Some(_) => raw_value_json.unwrap().to_string(),
+            None => String::new(), // Or handle as error/default
+        };
+
+        // Try numeric first
+        let node_numeric = numeric_nodes.get(&target_path);
+        // Try label
+        let node_label = label_nodes.get(&(target_path.clone(), raw_value_str.clone()));
+
+        let node = node_numeric.or(node_label);
+
+        let (result, calculation_desc) = if let Some(node) = node {
+            let cost_per_unit = node.cost;
+            let unit = node.unit.clone().unwrap_or_default();
+            let currency = node.currency.clone().unwrap_or_default();
+
+            if node.node_type == "numeric" {
+                // Must have a numeric input value
+                let val = raw_value_json.and_then(|v| v.as_f64()).unwrap_or(0.0);
+
+                let res = val * cost_per_unit;
+                let part1 = format!("{} {}", val, unit).trim().to_string();
+                let part2 = format!("{} {}", cost_per_unit, currency).trim().to_string();
+                (res, format!("{} * {}", part1, part2))
+            } else {
+                // Label
+                let res = cost_per_unit;
+                let part2 = format!("{} {}", cost_per_unit, currency).trim().to_string();
+                (res, format!("{} (fixed cost)", part2))
+            }
+        } else {
+            return Err(format!(
+                "{}: No pricing node found for '{}'",
+                step_name, target_path
+            ));
+        };
+
+        let raw_value_f64 = raw_value_json.and_then(|v| v.as_f64()).unwrap_or(0.0);
+
+        Ok((
+            result,
+            BreakdownEntry {
+                step_id: id,
+                name: step_name,
+                operation: "Price Calculation".to_string(),
+                description: format!("Calculate cost for {}", target_path),
+                inputs: vec![raw_value_f64],
+                calculation: calculation_desc,
+                result,
+            },
+        ))
+    }
+
     /// Process percentage calculation
     fn process_percentage(
         &mut self,
@@ -800,7 +957,9 @@ impl PricingEngine {
         step_values: &HashMap<i32, Value>,
         final_cost_by_path: &HashMap<String, Value>,
     ) -> Result<(Value, BreakdownEntry), String> {
-        let step_name = name.map(|s| s.to_string()).unwrap_or_else(|| format!("Step {}", id));
+        let step_name = name
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("Step {}", id));
         let resolved_inputs = self.resolve_inputs(inputs, step_values, final_cost_by_path)?;
 
         let calc_percent = if resolved_inputs.len() == 1 {
@@ -853,7 +1012,9 @@ impl PricingEngine {
         step_values: &HashMap<i32, Value>,
         final_cost_by_path: &HashMap<String, Value>,
     ) -> Result<(Value, BreakdownEntry), String> {
-        let step_name = name.map(|s| s.to_string()).unwrap_or_else(|| format!("Step {}", id));
+        let step_name = name
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("Step {}", id));
         let resolved_inputs = self.resolve_inputs(inputs, step_values, final_cost_by_path)?;
 
         let (value, dec) = if resolved_inputs.len() == 1 {
@@ -902,7 +1063,9 @@ impl PricingEngine {
         step_values: &HashMap<i32, Value>,
         final_cost_by_path: &HashMap<String, Value>,
     ) -> Result<(Value, BreakdownEntry), String> {
-        let step_name = name.map(|s| s.to_string()).unwrap_or_else(|| format!("Step {}", id));
+        let step_name = name
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("Step {}", id));
 
         let val = self.resolve_value(value, step_values, final_cost_by_path)?[0];
         let min_val = self.resolve_value(min, step_values, final_cost_by_path)?[0];
@@ -955,7 +1118,9 @@ impl PricingEngine {
         step_values: &HashMap<i32, Value>,
         final_cost_by_path: &HashMap<String, Value>,
     ) -> Result<(Value, BreakdownEntry), String> {
-        let step_name = name.map(|s| s.to_string()).unwrap_or_else(|| format!("Step {}", id));
+        let step_name = name
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| format!("Step {}", id));
 
         let left_val = self.resolve_value(&condition.left, step_values, final_cost_by_path)?[0];
         let right_val = self.resolve_value(&condition.right, step_values, final_cost_by_path)?[0];
@@ -1014,5 +1179,47 @@ impl PricingEngine {
 impl Default for PricingEngine {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn test_price_mode_with_units() {
+        let mut engine = PricingEngine::new();
+
+        let nodes = vec![PricingNode {
+            path: "/volume".to_string(),
+            node_type: "numeric".to_string(),
+            cost: 10.0,
+            unit: Some("cm3".to_string()),
+            currency: Some("USD".to_string()),
+            value: None,
+        }];
+
+        let strategy = PricingStrategy {
+            version: 1,
+            required_inputs: None,
+            steps: vec![Step::Price {
+                id: 1,
+                name: Some("Volume Cost".to_string()),
+                inputs: vec![json!("/volume")],
+            }],
+        };
+
+        let inputs = vec![Input {
+            path: "/volume".to_string(),
+            value: json!(2.0),
+        }];
+
+        let result = engine.calculate(nodes, strategy, inputs).unwrap();
+
+        assert_eq!(result.final_price, 20.0);
+        let breakdown = &result.breakdown[0];
+        assert_eq!(breakdown.calculation, "2 cm3 * 10 USD");
+        assert_eq!(breakdown.result, 20.0);
     }
 }
