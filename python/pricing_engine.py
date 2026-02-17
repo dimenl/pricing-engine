@@ -1055,13 +1055,13 @@ class PricingEngine:
                     )
             result = raw_value * cost_per_unit
             # Format: "2 cm3 * 20 INR" or "2 * 20"
-            part1 = f"{raw_value} {unit}".strip()
-            part2 = f"{cost_per_unit} {currency}".strip()
+            part1 = f"{self._format_number(raw_value)} {unit}".strip()
+            part2 = f"{self._format_number(cost_per_unit)} {currency}".strip()
             calculation_desc = f"{part1} * {part2}"
         else:
             # Label
             result = cost_per_unit
-            part2 = f"{cost_per_unit} {currency}".strip()
+            part2 = f"{self._format_number(cost_per_unit)} {currency}".strip()
             calculation_desc = f"{part2} (fixed cost)"
 
         breakdown = {

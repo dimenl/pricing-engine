@@ -993,13 +993,19 @@ impl PricingEngine {
                 let val = raw_value_json.and_then(|v| v.as_f64()).unwrap_or(0.0);
 
                 let res = val * cost_per_unit;
-                let part1 = format!("{} {}", val, unit).trim().to_string();
-                let part2 = format!("{} {}", cost_per_unit, currency).trim().to_string();
+                let part1 = format!("{} {}", self.format_number(val), unit)
+                    .trim()
+                    .to_string();
+                let part2 = format!("{} {}", self.format_number(cost_per_unit), currency)
+                    .trim()
+                    .to_string();
                 (res, format!("{} * {}", part1, part2))
             } else {
                 // Label
                 let res = cost_per_unit;
-                let part2 = format!("{} {}", cost_per_unit, currency).trim().to_string();
+                let part2 = format!("{} {}", self.format_number(cost_per_unit), currency)
+                    .trim()
+                    .to_string();
                 (res, format!("{} (fixed cost)", part2))
             }
         } else {
@@ -1309,6 +1315,8 @@ mod tests {
 
         assert_eq!(result.final_price, 20.0);
         let breakdown = &result.breakdown[0];
+        // 2.0 -> "2" due to formatting
+        // 10.0 -> "10" due to formatting
         assert_eq!(breakdown.calculation, "2 cm3 * 10 USD");
         assert_eq!(breakdown.result, 20.0);
     }
