@@ -45,6 +45,8 @@ pub enum Step {
         #[serde(skip_serializing_if = "Option::is_none")]
         name: Option<String>,
         inputs: Vec<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_hidden: Option<bool>,
     },
     #[serde(rename = "subtract")]
     Subtract {
@@ -52,6 +54,8 @@ pub enum Step {
         #[serde(skip_serializing_if = "Option::is_none")]
         name: Option<String>,
         inputs: Vec<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_hidden: Option<bool>,
     },
     #[serde(rename = "multiply")]
     Multiply {
@@ -59,6 +63,8 @@ pub enum Step {
         #[serde(skip_serializing_if = "Option::is_none")]
         name: Option<String>,
         inputs: Vec<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_hidden: Option<bool>,
     },
     #[serde(rename = "divide")]
     Divide {
@@ -66,6 +72,8 @@ pub enum Step {
         #[serde(skip_serializing_if = "Option::is_none")]
         name: Option<String>,
         inputs: Vec<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_hidden: Option<bool>,
     },
     #[serde(rename = "min")]
     Min {
@@ -73,6 +81,8 @@ pub enum Step {
         #[serde(skip_serializing_if = "Option::is_none")]
         name: Option<String>,
         inputs: Vec<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_hidden: Option<bool>,
     },
     #[serde(rename = "max")]
     Max {
@@ -80,6 +90,8 @@ pub enum Step {
         #[serde(skip_serializing_if = "Option::is_none")]
         name: Option<String>,
         inputs: Vec<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_hidden: Option<bool>,
     },
     #[serde(rename = "percentage")]
     Percentage {
@@ -89,6 +101,8 @@ pub enum Step {
         inputs: Vec<serde_json::Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         percent: Option<Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_hidden: Option<bool>,
     },
     #[serde(rename = "round")]
     Round {
@@ -98,6 +112,8 @@ pub enum Step {
         inputs: Vec<serde_json::Value>,
         #[serde(skip_serializing_if = "Option::is_none")]
         decimals: Option<i32>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_hidden: Option<bool>,
     },
     #[serde(rename = "clamp")]
     Clamp {
@@ -107,6 +123,8 @@ pub enum Step {
         value: serde_json::Value,
         min: serde_json::Value,
         max: serde_json::Value,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_hidden: Option<bool>,
     },
     #[serde(rename = "if")]
     If {
@@ -117,6 +135,8 @@ pub enum Step {
         then: serde_json::Value,
         #[serde(rename = "else", skip_serializing_if = "Option::is_none")]
         else_: Option<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_hidden: Option<bool>,
     },
     #[serde(rename = "price")]
     Price {
@@ -124,6 +144,8 @@ pub enum Step {
         #[serde(skip_serializing_if = "Option::is_none")]
         name: Option<String>,
         inputs: Vec<serde_json::Value>,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        is_hidden: Option<bool>,
     },
 }
 
@@ -165,6 +187,22 @@ impl Step {
             Step::Price { id, name, .. } => name.clone().unwrap_or_else(|| format!("Step {}", id)),
         }
     }
+
+    pub fn is_hidden(&self) -> bool {
+        match self {
+            Step::Add { is_hidden, .. } => is_hidden.unwrap_or(false),
+            Step::Subtract { is_hidden, .. } => is_hidden.unwrap_or(false),
+            Step::Multiply { is_hidden, .. } => is_hidden.unwrap_or(false),
+            Step::Divide { is_hidden, .. } => is_hidden.unwrap_or(false),
+            Step::Min { is_hidden, .. } => is_hidden.unwrap_or(false),
+            Step::Max { is_hidden, .. } => is_hidden.unwrap_or(false),
+            Step::Percentage { is_hidden, .. } => is_hidden.unwrap_or(false),
+            Step::Round { is_hidden, .. } => is_hidden.unwrap_or(false),
+            Step::Clamp { is_hidden, .. } => is_hidden.unwrap_or(false),
+            Step::If { is_hidden, .. } => is_hidden.unwrap_or(false),
+            Step::Price { is_hidden, .. } => is_hidden.unwrap_or(false),
+        }
+    }
 }
 
 /// Pricing strategy configuration
@@ -198,6 +236,7 @@ pub struct CalculationResult {
 /// The main pricing engine
 pub struct PricingEngine {
     regex_cache: HashMap<String, Regex>,
+    calc_rounding_decimals: i32,
 }
 
 impl PricingEngine {
@@ -205,6 +244,25 @@ impl PricingEngine {
     pub fn new() -> Self {
         PricingEngine {
             regex_cache: HashMap::new(),
+            calc_rounding_decimals: 2,
+        }
+    }
+
+    /// Set the number of decimal places for rounding in breakdown (-1 to disable)
+    pub fn with_rounding(mut self, decimals: i32) -> Self {
+        self.calc_rounding_decimals = decimals;
+        self
+    }
+
+    /// Format a number for display in calculation breakdown
+    fn format_number(&self, value: f64) -> String {
+        if self.calc_rounding_decimals == -1 {
+            value.to_string()
+        } else {
+            // Round to specified decimal places
+            let multiplier = 10_f64.powi(self.calc_rounding_decimals);
+            let rounded = (value * multiplier).round() / multiplier;
+            format!("{}", rounded)
         }
     }
 
@@ -245,7 +303,9 @@ impl PricingEngine {
                 &label_nodes,
             )?;
             step_values.insert(step.id(), result);
-            breakdown.push(breakdown_entry);
+            if !step.is_hidden() {
+                breakdown.push(breakdown_entry);
+            }
         }
 
         // Get final price (last step's value)
@@ -465,42 +525,54 @@ impl PricingEngine {
         label_nodes: &HashMap<(String, String), PricingNode>,
     ) -> Result<(Value, BreakdownEntry), String> {
         match step {
-            Step::Add { id, name, inputs } => self.process_add(
+            Step::Add {
+                id, name, inputs, ..
+            } => self.process_add(
                 *id,
                 name.as_deref(),
                 inputs,
                 step_values,
                 final_cost_by_path,
             ),
-            Step::Subtract { id, name, inputs } => self.process_subtract(
+            Step::Subtract {
+                id, name, inputs, ..
+            } => self.process_subtract(
                 *id,
                 name.as_deref(),
                 inputs,
                 step_values,
                 final_cost_by_path,
             ),
-            Step::Multiply { id, name, inputs } => self.process_multiply(
+            Step::Multiply {
+                id, name, inputs, ..
+            } => self.process_multiply(
                 *id,
                 name.as_deref(),
                 inputs,
                 step_values,
                 final_cost_by_path,
             ),
-            Step::Divide { id, name, inputs } => self.process_divide(
+            Step::Divide {
+                id, name, inputs, ..
+            } => self.process_divide(
                 *id,
                 name.as_deref(),
                 inputs,
                 step_values,
                 final_cost_by_path,
             ),
-            Step::Min { id, name, inputs } => self.process_min(
+            Step::Min {
+                id, name, inputs, ..
+            } => self.process_min(
                 *id,
                 name.as_deref(),
                 inputs,
                 step_values,
                 final_cost_by_path,
             ),
-            Step::Max { id, name, inputs } => self.process_max(
+            Step::Max {
+                id, name, inputs, ..
+            } => self.process_max(
                 *id,
                 name.as_deref(),
                 inputs,
@@ -512,6 +584,7 @@ impl PricingEngine {
                 name,
                 inputs,
                 percent,
+                ..
             } => self.process_percentage(
                 *id,
                 name.as_deref(),
@@ -525,6 +598,7 @@ impl PricingEngine {
                 name,
                 inputs,
                 decimals,
+                ..
             } => self.process_round(
                 *id,
                 name.as_deref(),
@@ -539,6 +613,7 @@ impl PricingEngine {
                 value,
                 min,
                 max,
+                ..
             } => self.process_clamp(
                 *id,
                 name.as_deref(),
@@ -554,6 +629,7 @@ impl PricingEngine {
                 condition,
                 then,
                 else_,
+                ..
             } => self.process_if(
                 *id,
                 name.as_deref(),
@@ -563,7 +639,9 @@ impl PricingEngine {
                 step_values,
                 final_cost_by_path,
             ),
-            Step::Price { id, name, inputs } => self.process_price(
+            Step::Price {
+                id, name, inputs, ..
+            } => self.process_price(
                 *id,
                 name.as_deref(),
                 inputs,
@@ -609,7 +687,7 @@ impl PricingEngine {
         let result: Value = resolved_inputs.iter().sum();
         let calculation = resolved_inputs
             .iter()
-            .map(|v| format!("{:.2}", v))
+            .map(|v| self.format_number(*v))
             .collect::<Vec<_>>()
             .join(" + ");
 
@@ -655,7 +733,7 @@ impl PricingEngine {
 
         let calculation = resolved_inputs
             .iter()
-            .map(|v| format!("{:.2}", v))
+            .map(|v| self.format_number(*v))
             .collect::<Vec<_>>()
             .join(" - ");
 
@@ -701,7 +779,7 @@ impl PricingEngine {
 
         let calculation = resolved_inputs
             .iter()
-            .map(|v| format!("{:.2}", v))
+            .map(|v| self.format_number(*v))
             .collect::<Vec<_>>()
             .join(" × ");
 
@@ -750,7 +828,7 @@ impl PricingEngine {
 
         let calculation = resolved_inputs
             .iter()
-            .map(|v| format!("{:.2}", v))
+            .map(|v| self.format_number(*v))
             .collect::<Vec<_>>()
             .join(" ÷ ");
 
@@ -798,7 +876,7 @@ impl PricingEngine {
             "min({})",
             resolved_inputs
                 .iter()
-                .map(|v| format!("{:.2}", v))
+                .map(|v| self.format_number(*v))
                 .collect::<Vec<_>>()
                 .join(", ")
         );
@@ -843,7 +921,7 @@ impl PricingEngine {
             "max({})",
             resolved_inputs
                 .iter()
-                .map(|v| format!("{:.2}", v))
+                .map(|v| self.format_number(*v))
                 .collect::<Vec<_>>()
                 .join(", ")
         );
@@ -986,7 +1064,11 @@ impl PricingEngine {
         }
 
         let result = (resolved_inputs[0] * calc_percent) / 100.0;
-        let calculation = format!("{:.2} × {}%", resolved_inputs[0], calc_percent);
+        let calculation = format!(
+            "{} × {}%",
+            self.format_number(resolved_inputs[0]),
+            calc_percent
+        );
 
         Ok((
             result,
@@ -1036,6 +1118,8 @@ impl PricingEngine {
 
         let multiplier = 10_f64.powi(dec);
         let result = (value * multiplier).round() / multiplier;
+        // In Python, implementation uses round(value, decimal) in the string,
+        // mirroring the Python version here:
         let calculation = format!("round({}, {})", value, dec);
 
         Ok((
@@ -1088,7 +1172,12 @@ impl PricingEngine {
             "not clamped".to_string()
         };
 
-        let calculation = format!("clamp({:.2}, {:.2}, {:.2})", val, min_val, max_val);
+        let calculation = format!(
+            "clamp({}, {}, {})",
+            self.format_number(val),
+            self.format_number(min_val),
+            self.format_number(max_val)
+        );
 
         Ok((
             result,
@@ -1150,12 +1239,12 @@ impl PricingEngine {
         let result = if condition_result { then_val } else { else_val };
 
         let calculation = format!(
-            "{:.2} {} {:.2} → {} → {:.2}",
-            left_val,
+            "{} {} {} → {} → {}",
+            self.format_number(left_val),
             condition.operator,
-            right_val,
+            self.format_number(right_val),
             if condition_result { "TRUE" } else { "FALSE" },
-            result
+            self.format_number(result)
         );
 
         Ok((
@@ -1207,6 +1296,7 @@ mod tests {
                 id: 1,
                 name: Some("Volume Cost".to_string()),
                 inputs: vec![json!("/volume")],
+                is_hidden: None,
             }],
         };
 
@@ -1221,5 +1311,96 @@ mod tests {
         let breakdown = &result.breakdown[0];
         assert_eq!(breakdown.calculation, "2 cm3 * 10 USD");
         assert_eq!(breakdown.result, 20.0);
+    }
+
+    #[test]
+    fn test_configurable_rounding() {
+        // Test default rounding (2 decimals)
+        let mut engine = PricingEngine::new();
+
+        // Strategy without required nodes/inputs for simpler arithmetic checks
+        let nodes: Vec<PricingNode> = vec![];
+        let inputs: Vec<Input> = vec![];
+
+        // 1.23456 + 2.34567 = 3.58023
+        // Rounded: 1.23 + 2.35
+        let strategy = PricingStrategy {
+            version: 1,
+            required_inputs: None,
+            steps: vec![Step::Add {
+                id: 1,
+                name: Some("Add".to_string()),
+                inputs: vec![json!(1.23456), json!(2.34567)],
+                is_hidden: None,
+            }],
+        };
+
+        // Note: passing empty nodes/inputs as ADD doesn't strictly require them if values are literals
+        let result = engine
+            .calculate(nodes.clone(), strategy.clone(), inputs.clone())
+            .unwrap();
+        let breakdown = &result.breakdown[0];
+        // 1.23456 -> 1.23
+        // 2.34567 -> 2.35
+        // calculation: "1.23 + 2.35"
+        assert!(
+            breakdown.calculation.contains("1.23"),
+            "Expected 1.23 in {}",
+            breakdown.calculation
+        );
+        assert!(
+            !breakdown.calculation.contains("1.23456"),
+            "Did not expect 1.23456 in {}",
+            breakdown.calculation
+        );
+
+        // Test disabled rounding (-1)
+        let mut engine_no_round = PricingEngine::new().with_rounding(-1);
+        let result_no_round = engine_no_round.calculate(nodes, strategy, inputs).unwrap();
+        let breakdown_no_round = &result_no_round.breakdown[0];
+        assert!(
+            breakdown_no_round.calculation.contains("1.23456"),
+            "Expected 1.23456 in {}",
+            breakdown_no_round.calculation
+        );
+    }
+
+    #[test]
+    fn test_hidden_steps() {
+        let mut engine = PricingEngine::new();
+        let nodes: Vec<PricingNode> = vec![];
+        let inputs: Vec<Input> = vec![];
+
+        let strategy = PricingStrategy {
+            version: 1,
+            required_inputs: None,
+            steps: vec![
+                Step::Add {
+                    id: 1,
+                    name: Some("Hidden Step".to_string()),
+                    inputs: vec![json!(10), json!(20)],
+                    is_hidden: Some(true),
+                },
+                Step::Multiply {
+                    id: 2,
+                    name: Some("Visible Step".to_string()),
+                    inputs: vec![json!("step__1"), json!(2)],
+                    is_hidden: None,
+                },
+            ],
+        };
+
+        let result = engine.calculate(nodes, strategy, inputs).unwrap();
+
+        // Check final price is correct (should use hidden step result)
+        // Step 1: 10 + 20 = 30 (Hidden)
+        // Step 2: 30 * 2 = 60 (Visible)
+        assert_eq!(result.final_price, 60.0);
+
+        // Check breakdown
+        println!("Breakdown: {:?}", result.breakdown);
+        assert_eq!(result.breakdown.len(), 1);
+        assert_eq!(result.breakdown[0].step_id, 2);
+        assert_eq!(result.breakdown[0].name, "Visible Step");
     }
 }

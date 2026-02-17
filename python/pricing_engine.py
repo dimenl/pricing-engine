@@ -42,6 +42,7 @@ class BaseStep(TypedDict):
     id: int
     mode: str
     name: NotRequired[str]
+    is_hidden: NotRequired[bool]
 
 
 class AddStep(BaseStep):
@@ -209,9 +210,29 @@ class PricingEngine:
         "!=": lambda a, b: a != b,
     }
 
-    def __init__(self) -> None:
+    def __init__(self, calc_rounding_decimals: int = 2) -> None:
+        """Initialize the pricing engine.
+
+        Args:
+           calc_rounding_decimals: Number of decimal places for rounding in breakdown.
+                                   Set to -1 to disable rounding. Default is 2.
+        """
+        self.calc_rounding_decimals = calc_rounding_decimals
         """Initialize the pricing engine with an empty regex cache for wildcard pattern matching."""
         self._regex_cache: dict[str, re.Pattern] = {}
+
+    def _format_number(self, value: Union[int, float]) -> str:
+        """Format a number for display in calculation breakdown.
+
+        Args:
+            value: The number to format
+
+        Returns:
+            Formatted string representation
+        """
+        if self.calc_rounding_decimals == -1:
+            return str(value)
+        return str(round(value, self.calc_rounding_decimals))
 
     def calculate(
         self,
@@ -291,7 +312,8 @@ class PricingEngine:
                 step, step_values, final_cost_by_path, input_values
             )
             step_values[step["id"]] = result
-            breakdown.append(breakdown_entry)
+            if not step.get("is_hidden", False):
+                breakdown.append(breakdown_entry)
 
         # Get final price (last step's value)
         # BUGFIX: Use the last step's actual ID instead of len(step_values)
@@ -585,7 +607,7 @@ class PricingEngine:
             "operation": "Addition",
             "description": f"Sum of {len(resolved_inputs)} values",
             "inputs": resolved_inputs,
-            "calculation": " + ".join(str(round(v, 2)) for v in resolved_inputs),
+            "calculation": " + ".join(self._format_number(v) for v in resolved_inputs),
             "result": result,
         }
         return result, breakdown
@@ -617,7 +639,7 @@ class PricingEngine:
             "operation": "Subtraction",
             "description": f"Subtract {len(resolved_inputs) - 1} value(s) from base",
             "inputs": resolved_inputs,
-            "calculation": " - ".join(str(round(v, 2)) for v in resolved_inputs),
+            "calculation": " - ".join(self._format_number(v) for v in resolved_inputs),
             "result": result,
         }
         return result, breakdown
@@ -649,7 +671,7 @@ class PricingEngine:
             "operation": "Multiplication",
             "description": f"Product of {len(resolved_inputs)} values",
             "inputs": resolved_inputs,
-            "calculation": " × ".join(str(round(v, 2)) for v in resolved_inputs),
+            "calculation": " × ".join(self._format_number(v) for v in resolved_inputs),
             "result": result,
         }
         return result, breakdown
@@ -683,7 +705,7 @@ class PricingEngine:
             "operation": "Division",
             "description": f"Divide {resolved_inputs[0]} by {len(resolved_inputs) - 1} value(s)",
             "inputs": resolved_inputs,
-            "calculation": " ÷ ".join(str(round(v, 2)) for v in resolved_inputs),
+            "calculation": " ÷ ".join(self._format_number(v) for v in resolved_inputs),
             "result": result,
         }
         return result, breakdown
@@ -713,7 +735,7 @@ class PricingEngine:
             "operation": "Minimum",
             "description": f"Minimum of {len(resolved_inputs)} values",
             "inputs": resolved_inputs,
-            "calculation": f"min({', '.join(str(round(v, 2)) for v in resolved_inputs)})",
+            "calculation": f"min({', '.join(self._format_number(v) for v in resolved_inputs)})",
             "result": result,
         }
         return result, breakdown
@@ -743,7 +765,7 @@ class PricingEngine:
             "operation": "Maximum",
             "description": f"Maximum of {len(resolved_inputs)} values",
             "inputs": resolved_inputs,
-            "calculation": f"max({', '.join(str(round(v, 2)) for v in resolved_inputs)})",
+            "calculation": f"max({', '.join(self._format_number(v) for v in resolved_inputs)})",
             "result": result,
         }
         return result, breakdown
@@ -791,7 +813,7 @@ class PricingEngine:
             "operation": "Percentage",
             "description": f"{calc_percent}% of {resolved_inputs[0]}",
             "inputs": resolved_inputs,
-            "calculation": f"{round(resolved_inputs[0], 2)} × {calc_percent}%",
+            "calculation": f"{self._format_number(resolved_inputs[0])} × {calc_percent}%",
             "result": result,
         }
         return result, breakdown
@@ -887,7 +909,7 @@ class PricingEngine:
             "operation": "Clamp",
             "description": f"Clamp {value} between {min_val} and {max_val} - {clamped}",
             "inputs": [value, min_val, max_val],
-            "calculation": f"clamp({round(value, 2)}, {round(min_val, 2)}, {round(max_val, 2)})",
+            "calculation": f"clamp({self._format_number(value)}, {self._format_number(min_val)}, {self._format_number(max_val)})",
             "result": result,
         }
         return result, breakdown
@@ -946,7 +968,7 @@ class PricingEngine:
             "operation": "Conditional",
             "description": f"If {left_val} {operator} {right_val} then {then_val} else {else_val}",
             "inputs": [left_val, right_val, then_val, else_val],
-            "calculation": f"{round(left_val, 2)} {operator} {round(right_val, 2)} → {'TRUE' if condition_result else 'FALSE'} → {round(result, 2)}",
+            "calculation": f"{self._format_number(left_val)} {operator} {self._format_number(right_val)} → {'TRUE' if condition_result else 'FALSE'} → {self._format_number(result)}",
             "result": result,
         }
         return result, breakdown
